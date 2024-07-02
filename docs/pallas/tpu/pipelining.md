@@ -13,7 +13,7 @@ kernelspec:
 
 +++ {"id": "teoJ_fUwlu0l"}
 
-# Pipelining and `BlockSpec`s
+# Pipelining
 
 <!--* freshness: { reviewed: '2024-04-08' } *-->
 
@@ -62,7 +62,7 @@ Let's talk about the components of this diagram in more detail:
   Compute units operate on values that live in SREGs and VREGs and output
   values into those registers as well.
 
-In order to do a vectorized computation on our values `x` and `y` that live 
+In order to do a vectorized computation on our values `x` and `y` that live
 in HBM, we need to:
 
 1. Copy the values `x` and `y` into VMEM.
@@ -129,7 +129,7 @@ the value in `z_vmem_ref` to HBM, resulting in an output `jax.Array`.
 Pallas exposes access to lower level memory spaces like VMEM and SMEM but
 writing kernels utilizing them adds some considerations.
 
-1. Memory capacity. VMEM and SMEM are *small*! VMEM on v4 TPUs is only 16MiB 
+1. Memory capacity. VMEM and SMEM are *small*! VMEM on v4 TPUs is only 16MiB
   and SMEM ranges in the tens to hundreds of KiB.
   If our arrays are too big, we won't even be able to fit them into VMEM at all.
   For reference, a `f32[2048, 2048]` array is 16MiB, so our above kernel won't
@@ -204,66 +204,21 @@ executing kernels that would be a pain to implement manually.
 Fear not! Pallas offers an API for expressing pipelines without too much
 boilerplate, namely through `grid`s and `BlockSpec`s.
 
-+++ {"id": "x-LQKu8HwED7"}
-
-### `grid`, a.k.a. kernels in a loop
-
 See how in the above pipelined example, we are executing the same logic
 multiple times: steps 3-5 and 8-10 both execute the same operations,
 only on different inputs.
-The generalized version of this is a loop in which the same kernel is
-executed multiple times.
-`pallas_call` provides an option to do exactly that.
+The {func}`jax.experimental.pallas.pallas_call` provides a way to
+execute a kernel multiple times, by using the `grid` argument.
+See {ref}`pallas_grid`.
 
-The number of iterations in the loop is specified via the `grid` argument
-to `pallas_call`. Conceptually:
-```python
-pl.pallas_call(some_kernel, grid=n)(...)
-```
-maps to
-```python
-for i in range(n):
-  # do HBM -> VMEM copies
-  some_kernel(...)
-  # do VMEM -> HBM copies
-```
-Grids can be generalized to be multi-dimensional, corresponding to nested
-loops. For example,
+We also use {class}`jax.experimental.pallas.BlockSpec` to specify
+how to construct the input of each kernel invocation.
+See {ref}`pallas_blockspec`.
 
-```python
-pl.pallas_call(some_kernel, grid=(n, m))(...)
-```
-is equivalent to
-```python
-for i in range(n):
-  for j in range(m):
-    # do HBM -> VMEM copies
-    some_kernel(...)
-    # do VMEM -> HBM copies
-```
-This generalizes to any tuple of integers (a length `d` grid will correspond
-to `d` nested loops).
-
-+++ {"id": "hRLr5JeyyEwM"}
-
-### `BlockSpec`, a.k.a. how to chunk up inputs
-
-+++ {"id": "miWgPkytyIIa"}
-
-The next piece of information we need to provide Pallas in order to
-automatically pipeline our computation is information on how to chunk it up.
-Specifically, we need to provide a mapping between *the iteration of the loop*
-to *which block of our inputs and outputs to be operated on*.
-A `BlockSpec` is exactly these two pieces of information.
-
-First we pick a `block_shape` for our inputs.
 In the pipelining example above, we had `(512, 512)`-shaped arrays and
 split them along the leading dimension into two `(256, 512)`-shaped arrays.
-In this pipeline, our `block_shape` would be `(256, 512)`.
-
-We then provide an `index_map` function that maps the iteration space to the
-blocks.
-Specifically, in the aforementioned pipeline, on the 1st iteration we'd
+In this pipeline, our `BlockSpec.block_shape` would be `(256, 512)`.
+On the 1st iteration we'd
 like to select `x1` and on the second iteration we'd like to use `x2`.
 This can be expressed with the following `index_map`:
 
@@ -274,7 +229,7 @@ def x_index_map(i):
 
 We'd then construct the `BlockSpec`:
 ```python
-block_spec = pl.BlockSpec(x_index_map, (256, 512))
+block_spec = pl.BlockSpec((256, 512), x_index_map)
 ```
 
 The `BlockSpec`s for `y` and `z` will be the same as the one for `x`.
@@ -292,13 +247,14 @@ and `out_specs` corresponds to the output).
 :outputId: 504bab29-83f3-4e1f-8664-1860ad15b6de
 
 def add_matrices_pipelined(x: jax.Array, y: jax.Array) -> jax.Array:
-  block_spec = pl.BlockSpec(lambda i: (i, 0), (256, 512))
+  block_spec = pl.BlockSpec((256, 512), lambda i: (i, 0))
   return pl.pallas_call(
       add_matrices_kernel,
       out_shape=x,
       in_specs=[block_spec, block_spec],
       out_specs=block_spec,
-      grid=(2,))(x, y)
+      grid=(2,)
+  )(x, y)
 
 add_matrices_pipelined(x, y)
 ```
@@ -340,8 +296,7 @@ def add_matrices_pipelined_2d(
     x: jax.Array, y: jax.Array, *, bm: int = 256, bn: int = 256
 ) -> jax.Array:
   m, n = x.shape
-  block_spec = pl.BlockSpec(lambda i, j: (i, j), (bm, bn))
-
+  block_spec = pl.BlockSpec((bm, bn), lambda i, j: (i, j))
   return pl.pallas_call(
       add_matrices_kernel,
       out_shape=x,
@@ -349,7 +304,6 @@ def add_matrices_pipelined_2d(
       out_specs=block_spec,
       grid=(m // bm, n // bn),
   )(x, y)
-
 
 np.testing.assert_array_equal(
     add_matrices_pipelined_2d(x, y, bm=256, bn=256), x + y
@@ -404,10 +358,10 @@ def naive_sum(x: jax.Array) -> jax.Array:
       naive_sum_kernel,
       grid=grid,
       # None in `block_shape` means we pick a size of 1 and squeeze it away
-      in_specs=[pl.BlockSpec(lambda i: (i, 0, 0), (None, *out_shape))],
-      out_specs=pl.BlockSpec(lambda i: (0, 0), out_shape),
-      out_shape=jax.ShapeDtypeStruct(out_shape, x.dtype)
-      )(x)
+      in_specs=[pl.BlockSpec((None, *out_shape), lambda i: (i, 0, 0))],
+      out_specs=pl.BlockSpec(out_shape, lambda i: (0, 0)),
+      out_shape=jax.ShapeDtypeStruct(out_shape, x.dtype),
+  )(x)
 naive_sum(x)
 ```
 
@@ -454,10 +408,11 @@ def sum(x: jax.Array) -> jax.Array:
       sum_kernel,
       grid=grid,
       # None in `block_shape` means we pick a size of 1 and squeeze it away
-      in_specs=[pl.BlockSpec(lambda i: (i, 0, 0), (None, *out_shape))],
-      out_specs=pl.BlockSpec(lambda i: (0, 0), out_shape),
+      in_specs=[pl.BlockSpec((None, *out_shape), lambda i: (i, 0, 0))],
+      out_specs=pl.BlockSpec(out_shape, lambda i: (0, 0)),
       out_shape=jax.ShapeDtypeStruct(out_shape, x.dtype)
-      )(x)
+  )(x)
+
 sum(x)
 ```
 
@@ -503,15 +458,15 @@ annotation to `pallas_call` called `dimension_semantics`.
 :outputId: 385ed87c-d95c-466c-af77-df3845c979f2
 
 def add_matrices_pipelined_megacore(x: jax.Array, y: jax.Array) -> jax.Array:
-  block_spec = pl.BlockSpec(lambda i: (i, 0), (256, 512))
+  block_spec = pl.BlockSpec((256, 512), lambda i: (i, 0))
   return pl.pallas_call(
       add_matrices_kernel,
       out_shape=x,
       in_specs=[block_spec, block_spec],
       out_specs=block_spec,
       grid=(2,),
-      compiler_params=dict(mosaic=dict(dimension_semantics=("parallel",))))(
-        x, y)
+      compiler_params=dict(mosaic=dict(dimension_semantics=("parallel",)))
+  )(x, y)
 
 x, y = jnp.ones((512, 512)), jnp.ones((512, 512))
 add_matrices_pipelined_megacore(x, y)

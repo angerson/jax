@@ -23,7 +23,7 @@ job of compiling user programs but inevitably some users hit XLA's
 limitations.
 In these cases, we need to provide an “escape hatch” to allow
 experts to write hand-tuned kernels that outperform XLA at that
-point in time. 
+point in time.
 Furthermore, advances in ML systems research take some time to be
 incorporated into XLA and users often want to run ahead with them.
 Over time, the compiler can incorporate the optimizations that were proven
@@ -286,9 +286,10 @@ The signature of `pallas_call` is as follows:
 ```python
 def pallas_call(
     kernel: Callable,
+    out_shape: Sequence[jax.ShapeDtypeStruct],
+    *,
     in_specs: Sequence[Spec],
     out_specs: Sequence[Spec],
-    out_shapes: Sequence[jax.ShapeDtypeStruct],
     grid: Optional[Tuple[int, ...]] = None) -> Callable:
   ...
 ```
@@ -303,9 +304,9 @@ information about how the kernel will be scheduled on the accelerator.
 The (rough) semantics for `pallas_call` are as follows:
 
 ```python
-def pallas_call(kernel, in_specs, out_specs, out_shapes, grid):
+def pallas_call(kernel, out_shape, *, in_specs, out_specs, grid):
   def execute(*args):
-    outputs = map(empty_ref, out_shapes)
+    outputs = map(empty_ref, out_shape)
     grid_indices = map(range, grid)
     for indices in itertools.product(*grid_indices): # Could run in parallel!
       local_inputs = [in_spec.transform(arg, indices) for arg, in_spec in
@@ -430,10 +431,10 @@ add = pl.pallas_call(
     add_kernel,
     out_shape=jax.ShapeDtypeStruct((8,), jnp.int32),
     in_specs=[
-      pl.BlockSpec(lambda i: i, (2,)),
-      pl.BlockSpec(lambda i: i, (2,))
+        pl.BlockSpec((2,), lambda i: i),
+        pl.BlockSpec((2,), lambda i: i)
     ],
-    out_specs=pl.BlockSpec(lambda i: i, (2,)),
+    out_specs=pl.BlockSpec((2,), lambda i: i),
     grid=(4,))
 add(x, y)
 ```
@@ -464,10 +465,10 @@ def matmul(x, y, *, block_shape, activation):
       partial(matmul_kernel, block_k=block_k, activation=activation),
       out_shape=jax.ShapeDtypeStruct((x.shape[0], y.shape[1],), jnp.float32),
       in_specs=[
-        pl.BlockSpec(lambda i, j: (i, 0), (block_m, x.shape[1])),
-        pl.BlockSpec(lambda i, j: (0, j), (y.shape[0], block_n))
+          pl.BlockSpec((block_m, x.shape[1]), lambda i, j: (i, 0)),
+          pl.BlockSpec((y.shape[0], block_n), lambda i, j: (0, j))
       ],
-      out_specs=pl.BlockSpec(lambda i, j: (i, j), (block_m, block_n)),
+      out_specs=pl.BlockSpec((block_m, block_n), lambda i, j: (i, j)),
       grid=(4, 4),
   )
   return fused_matmul(x, y)

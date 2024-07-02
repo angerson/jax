@@ -53,7 +53,7 @@ def add_vectors_kernel(x_ref, y_ref, o_ref):
 
 Let's dissect this function a bit. Unlike most JAX functions you've probably written,
 it does not take in `jax.Array`s as inputs and doesn't return any values.
-Instead it takes in *`Ref`* objects as inputs. Note that we also don't have any outputs
+Instead, it takes in *`Ref`* objects as inputs. Note that we also don't have any outputs
 but we are given an `o_ref`, which corresponds to the desired output.
 
 **Reading from `Ref`s**
@@ -81,9 +81,10 @@ We use the `pallas_call` higher-order function.
 ```{code-cell} ipython3
 @jax.jit
 def add_vectors(x: jax.Array, y: jax.Array) -> jax.Array:
-  return pl.pallas_call(add_vectors_kernel,
-                        out_shape=jax.ShapeDtypeStruct(x.shape, x.dtype)
-                        )(x, y)
+  return pl.pallas_call(
+      add_vectors_kernel,
+      out_shape=jax.ShapeDtypeStruct(x.shape, x.dtype)
+  )(x, y)
 add_vectors(jnp.arange(8), jnp.arange(8))
 ```
 
@@ -133,7 +134,7 @@ Part of writing Pallas kernels is thinking about how to take big arrays that
 live in high-bandwidth memory (HBM, also known as DRAM) and expressing computations
 that operate on "blocks" of those arrays that can fit in SRAM.
 
-### Grids
+### Grids by example
 
 To automatically "carve" up the inputs and outputs, you provide a `grid` and
 `BlockSpec`s to `pallas_call`.
@@ -170,10 +171,10 @@ def iota_kernel(o_ref):
 We now execute it using `pallas_call` with an additional `grid` argument.
 
 ```{code-cell} ipython3
-def iota(len: int):
+def iota(size: int):
   return pl.pallas_call(iota_kernel,
-                        out_shape=jax.ShapeDtypeStruct((len,), jnp.int32),
-                        grid=(len,))()
+                        out_shape=jax.ShapeDtypeStruct((size,), jnp.int32),
+                        grid=(size,))()
 iota(8)
 ```
 
@@ -187,9 +188,11 @@ operations like matrix multiplications really quickly.
 On TPUs, programs are executed in a combination of parallel and sequential
 (depending on the architecture) so there are slightly different considerations.
 
+You can read more details at {ref}`pallas_grid`.
+
 +++
 
-### Block specs
+### Block specs by example
 
 +++
 
@@ -270,14 +273,16 @@ the computation 4 ways. We split up `z` into 4 `(512, 512)` blocks where
 each block is computed with a `(512, 1024) x (1024, 512)` matrix multiplication.
 To express this, we'd first use a `(2, 2)` grid (one block for each program).
 
-For `x`, we use `BlockSpec(lambda i, j: (i, 0), (512, 1024))`  -- this
+For `x`, we use `BlockSpec((512, 1024), lambda i, j: (i, 0))`  -- this
 carves `x` up into "row" blocks.
 To see this see how both program instances
 `(1, 0)` and `(1, 1)` pick the `(1, 0)` block in `x`.
-For `y`, we use a transposed version `BlockSpec(lambda i, j: (0, j), (1024, 512))`.
-Finally, for `z` we use `BlockSpec(lambda i, j: (i, j), (512, 512))`.
+For `y`, we use a transposed version `BlockSpec((1024, 512), lambda i, j: (0, j))`.
+Finally, for `z` we use `BlockSpec((512, 512), lambda i, j: (i, j))`.
 
 These `BlockSpec`s are passed into `pallas_call` via `in_specs` and `out_specs`.
+
+For more detail on `BlockSpec`s see {ref}`pallas_blockspec`.
 
 Underneath the hood, `pallas_call` will automatically carve up your inputs and
 outputs into `Ref`s for each block that will be passed into the kernel.
@@ -292,11 +297,11 @@ def matmul(x: jax.Array, y: jax.Array):
     out_shape=jax.ShapeDtypeStruct((x.shape[0], y.shape[1]), x.dtype),
     grid=(2, 2),
     in_specs=[
-      pl.BlockSpec(lambda i, j: (i, 0), (x.shape[0] // 2, x.shape[1])),
-      pl.BlockSpec(lambda i, j: (0, j), (y.shape[0], y.shape[1] // 2))
+        pl.BlockSpec((x.shape[0] // 2, x.shape[1]), lambda i, j: (i, 0)),
+        pl.BlockSpec((y.shape[0], y.shape[1] // 2), lambda i, j: (0, j))
     ],
     out_specs=pl.BlockSpec(
-      lambda i, j: (i, j), (x.shape[0] // 2, y.shape[1] // 2)
+        (x.shape[0] // 2, y.shape[1] // 2), lambda i, j: (i, j),
     )
   )(x, y)
 k1, k2 = jax.random.split(jax.random.key(0))
@@ -321,11 +326,11 @@ def matmul(x: jax.Array, y: jax.Array, *, activation):
     out_shape=jax.ShapeDtypeStruct((x.shape[0], y.shape[1]), x.dtype),
     grid=(2, 2),
     in_specs=[
-      pl.BlockSpec(lambda i, j: (i, 0), (x.shape[0] // 2, x.shape[1])),
-      pl.BlockSpec(lambda i, j: (0, j), (y.shape[0], y.shape[1] // 2))
+        pl.BlockSpec((x.shape[0] // 2, x.shape[1]), lambda i, j: (i, 0)),
+        pl.BlockSpec((y.shape[0], y.shape[1] // 2), lambda i, j: (0, j))
     ],
     out_specs=pl.BlockSpec(
-      lambda i, j: (i, j), (x.shape[0] // 2, y.shape[1] // 2)
+        (x.shape[0] // 2, y.shape[1] // 2), lambda i, j: (i, j)
     ),
   )(x, y)
 k1, k2 = jax.random.split(jax.random.key(0))

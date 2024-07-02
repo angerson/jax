@@ -1268,7 +1268,7 @@ def _partial_eval_jaxpr_custom_cached(
         map(partial(write, False, True), resvars)
         residuals.update(resvars)
         reload_eqn = core.JaxprEqn(
-            resvars, eqn.outvars, device_put_p,  # type: ignore
+            resvars, eqn.outvars, device_put_p,
             dict(devices=[TransferToMemoryKind(policy.src)], srcs=[None]),
             set(), source_info_util.new_source_info(),
             JaxprEqnContext(None, False))
@@ -1521,7 +1521,7 @@ def prune_closed_jaxpr_outputs(
 ) -> ClosedJaxpr:
   return _prune_closed_jaxpr_outputs(jaxpr, tuple(used_outputs))
 
-@weakref_lru_cache
+@partial(weakref_lru_cache, trace_context_in_key=False)
 def _prune_closed_jaxpr_outputs(
     jaxpr: ClosedJaxpr, used_outputs: tuple[bool, ...]
 ) -> ClosedJaxpr:
