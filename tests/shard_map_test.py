@@ -37,7 +37,6 @@ from jax._src import config
 from jax._src import core
 from jax._src import prng
 from jax._src import test_util as jtu
-from jax._src.lib import xla_extension_version
 from jax._src.lib.mlir.dialects import sdy
 from jax._src.util import safe_zip, safe_map, partition_list, merge_lists
 from jax._src.ad_checkpoint import saved_residuals
@@ -1496,6 +1495,55 @@ class ShardMapTest(jtu.JaxTestCase):
     self.assertEqual(str(e1.primitive), 'psum2')
     self.assertEqual(str(e2.primitive), 'pbroadcast')
 
+  def test_transpose_float0(self):
+    mesh = jtu.create_mesh((4,), ('x',))
+
+    s = jax.sharding.NamedSharding(mesh, P(None, 'x'))
+
+    # vjp that triggers float0
+    @jax.custom_vjp
+    def f(x, _):
+      return x
+    def f_fwd(x, y):
+      return x, jnp.zeros(shape=y.shape, dtype=np.int32)
+    def f_rev(tmp, g):
+      return (g, tmp)
+    f.defvjp(f_fwd, f_rev)
+
+    # trivial vjp that consumes float0
+    @jax.custom_vjp
+    def g(x, y):
+      return x, y
+    def g_fwd(x, y):
+      return jax.vjp(lambda x, y: (x, y), x, y)
+    def g_bwd(vjp_fn, result):
+      return vjp_fn(result)
+    g.defvjp(g_fwd, g_bwd)
+
+    @partial(shard_map, mesh=mesh, in_specs=(P('x'), P()), out_specs=P())
+    def f_shmapped(x, y):
+      return jax.lax.psum(f(x, y).sum(), axis_name=('x'))
+
+    @partial(shard_map, mesh=mesh, check_rep=False,
+                       in_specs=P('x'), out_specs=(P('x'), P()))
+    def f_shmapped2(x, y):
+      return g(x, y)
+
+    def f_wrapper(x, y):
+      x, y = jax.lax.map(lambda xs: f_shmapped2(xs[0], xs[1]), (x, y))
+      return jax.lax.map(lambda xs: f_shmapped(xs[0], xs[1]), (x, y)).sum()
+
+    @partial(jax.jit, in_shardings=s,
+             out_shardings=jax.sharding.NamedSharding(mesh, P()))
+    def example(x, y):
+      return jax.grad(f_wrapper, allow_int=True, argnums=(0, 1))(x, y)
+
+    x = np.zeros(shape=(8,16), dtype=np.float32)
+    y = np.zeros(shape=(8,16), dtype=np.int32)
+    # Doesn't crash.
+    dx, dy = example(x, y)
+    self.assertEqual(dy.dtype, jax.dtypes.float0)
+
   def test_rewrite_binops(self):
     mesh = jtu.create_mesh((4,), ('x',))
 
@@ -2642,7 +2690,6 @@ class CustomPartitionerTest(jtu.JaxTestCase):
 @unittest.skipIf(sdy is None, "shardy is not enabled")
 class SdyIntegrationTest(jtu.JaxTestCase):
 
-  @unittest.skipIf(xla_extension_version < 292, "Requires XLA version >=292")
   # Verify we can lower to a `ManualComputationOp`.
   def test_shardy_collective_permute(self):
     mesh = jtu.create_mesh((2,), ('x',))
