@@ -123,6 +123,11 @@ jax_py_test(
 jax_multiplatform_test(
     name = "array_interoperability_test",
     srcs = ["array_interoperability_test.py"],
+    backend_tags = {
+        "gpu": [
+            "noasan",  # Forge OOM
+        ],
+    },
     enable_backends = [
         "cpu",
         "gpu",
@@ -132,6 +137,7 @@ jax_multiplatform_test(
     ],
     tags = [
         "multiaccelerator",
+        "notsan",  # Times out
     ],
     deps = py_deps([
         "absl/testing",
