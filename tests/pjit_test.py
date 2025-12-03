@@ -29,6 +29,7 @@ import concurrent.futures
 
 import jax
 import jax.numpy as jnp
+from jax import reshard
 from jax._src import core
 from jax._src import config
 from jax._src import dispatch
@@ -42,7 +43,7 @@ from jax._src.lax import lax as lax_internal
 from jax.lax import with_sharding_constraint
 from jax._src import prng
 from jax.sharding import (PartitionSpec as P, Mesh, auto_axes, explicit_axes,
-                          reshard, AbstractDevice)
+                          AbstractDevice)
 from jax.experimental import multihost_utils
 from jax._src.shard_map import shard_map
 from jax._src.compilation_cache import is_persistent_cache_enabled
@@ -6450,11 +6451,12 @@ class ShardingInTypesTest(jtu.JaxTestCase):
     out2 = core.jaxpr_as_fun(jaxpr)(arr)
     self.assertEqual(out2[0].sharding, NamedSharding(mesh, P('x', 'y')))
 
-  @jtu.with_explicit_mesh((2, 2), ('x', 'y'))
+  @jtu.with_explicit_mesh((2, 2), ('x', 'y'), iota_order=True)
   def test_device_put_different_dst_mesh(self, mesh):
     np1 = np.arange(16).reshape(8, 2)
     x = jax.device_put(np1, P('x', 'y'))
-    mesh2 = jax.make_mesh((4,), ('a',), axis_types=(AxisType.Explicit,))
+    mesh2 = jtu.create_mesh((4,), ('a',), axis_types=(AxisType.Explicit,),
+                            iota_order=True)
     y = jax.device_put(x, NamedSharding(mesh2, P('a', None)))
     self.assertEqual(y.sharding, NamedSharding(mesh2, P('a', None)))
     self.assertArraysEqual(y, np1)
